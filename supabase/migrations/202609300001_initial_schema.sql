@@ -47,12 +47,14 @@ create table public.ratings (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null references public.profiles(id) on delete cascade,
   item_id uuid not null references public.catalog_items(id) on delete cascade,
+  category public.content_category not null,
   score numeric(3,1) not null check (score between 1 and 10 and mod(score * 2, 1) = 0),
   note text not null default '' check (char_length(note) <= 280),
   rank smallint not null check (rank between 1 and 25),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  unique (user_id, item_id)
+  unique (user_id, item_id),
+  constraint ratings_user_category_rank_key unique (user_id, category, rank) deferrable initially immediate
 );
 
 create table public.activities (
@@ -89,20 +91,18 @@ create or replace function public.enforce_rating_rank() returns trigger language
 declare item_category public.content_category;
 begin
   select category into item_category from public.catalog_items where id = new.item_id;
-  if exists (
-    select 1 from public.ratings r join public.catalog_items i on i.id = r.item_id
-    where r.user_id = new.user_id and i.category = item_category and r.rank = new.rank and r.id <> new.id
-  ) then raise exception 'rank_taken'; end if;
-  if (select count(*) from public.ratings r join public.catalog_items i on i.id = r.item_id
-      where r.user_id = new.user_id and i.category = item_category and r.id <> new.id) >= 25 then
+  if item_category is null then raise exception 'invalid_catalog_item'; end if;
+  new.category := item_category;
+  if (select count(*) from public.ratings r
+      where r.user_id = new.user_id and r.category = item_category and r.id <> new.id) >= 25 then
     raise exception 'collection_full';
   end if;
   return new;
 end;
 $$;
-create trigger enforce_rating_rank before insert or update of rank, item_id on public.ratings for each row execute function public.enforce_rating_rank();
+create trigger enforce_rating_rank before insert or update of rank, item_id, user_id, category on public.ratings for each row execute function public.enforce_rating_rank();
 
-create or replace function public.create_rating_activity() returns trigger language plpgsql set search_path = '' as $$
+create or replace function public.create_rating_activity() returns trigger language plpgsql security definer set search_path = '' as $$
 begin insert into public.activities(rating_id, user_id) values (new.id, new.user_id); return new; end;
 $$;
 create trigger rating_activity after insert on public.ratings for each row execute function public.create_rating_activity();
@@ -123,19 +123,32 @@ create trigger on_auth_user_created after insert on auth.users for each row exec
 
 create or replace function public.reorder_collection(category_input public.content_category, ordered_rating_ids uuid[])
 returns void language plpgsql security invoker set search_path = '' as $$
-declare current_user_id uuid := auth.uid(); supplied_count int; owned_count int;
+declare current_user_id uuid := auth.uid(); supplied_count int; owned_count int; collection_count int;
 begin
+  if current_user_id is null then raise exception 'authentication_required'; end if;
   supplied_count := coalesce(array_length(ordered_rating_ids, 1), 0);
   if supplied_count > 25 then raise exception 'collection_full'; end if;
-  select count(*) into owned_count from public.ratings r join public.catalog_items i on i.id = r.item_id
-  where r.user_id = current_user_id and i.category = category_input and r.id = any(ordered_rating_ids);
-  if owned_count <> supplied_count then raise exception 'invalid_rating_ids'; end if;
-  update public.ratings set rank = rank + 100 where user_id = current_user_id and id = any(ordered_rating_ids);
-  update public.ratings r set rank = x.position
+  select count(*) into collection_count from public.ratings
+  where user_id = current_user_id and category = category_input;
+  select count(*) into owned_count from public.ratings
+  where user_id = current_user_id and category = category_input and id = any(ordered_rating_ids);
+  if owned_count <> supplied_count or collection_count <> supplied_count then
+    raise exception 'invalid_rating_ids';
+  end if;
+  set constraints ratings_user_category_rank_key deferred;
+  update public.ratings r set rank = x.position::smallint
   from unnest(ordered_rating_ids) with ordinality as x(id, position)
-  where r.id = x.id and r.user_id = current_user_id;
+  where r.id = x.id and r.user_id = current_user_id and r.category = category_input;
+  set constraints ratings_user_category_rank_key immediate;
 end;
 $$;
+
+revoke all on function public.set_updated_at() from public, anon, authenticated;
+revoke all on function public.enforce_rating_rank() from public, anon, authenticated;
+revoke all on function public.create_rating_activity() from public, anon, authenticated;
+revoke all on function public.handle_new_user() from public, anon, authenticated;
+revoke all on function public.reorder_collection(public.content_category, uuid[]) from public, anon, authenticated;
+grant execute on function public.reorder_collection(public.content_category, uuid[]) to authenticated, service_role;
 
 alter table public.profiles enable row level security;
 alter table public.profile_categories enable row level security;
@@ -151,6 +164,7 @@ create policy "category settings are public" on public.profile_categories for se
 create policy "owners manage category settings" on public.profile_categories for all using (auth.uid() = user_id) with check (auth.uid() = user_id);
 create policy "catalog is public" on public.catalog_items for select using (true);
 create policy "authenticated users cache catalog" on public.catalog_items for insert to authenticated with check (true);
+create policy "authenticated users refresh catalog" on public.catalog_items for update to authenticated using (true) with check (true);
 create policy "ratings visible for public categories" on public.ratings for select using (
   exists (select 1 from public.catalog_items i join public.profile_categories pc on pc.user_id = ratings.user_id and pc.category = i.category where i.id = ratings.item_id and pc.visible)
   or auth.uid() = user_id
@@ -165,6 +179,47 @@ create policy "users delete own follows" on public.follows for delete using (aut
 create policy "likes are public" on public.activity_likes for select using (true);
 create policy "users create own likes" on public.activity_likes for insert to authenticated with check (auth.uid() = user_id);
 create policy "users delete own likes" on public.activity_likes for delete using (auth.uid() = user_id);
+
+-- The project keeps "Automatically expose new tables" disabled, so Data API
+-- access is granted deliberately here. RLS still decides which rows are visible.
+grant usage on schema public to anon, authenticated, service_role;
+
+revoke all on table
+  public.profiles,
+  public.profile_categories,
+  public.catalog_items,
+  public.ratings,
+  public.activities,
+  public.follows,
+  public.activity_likes
+from anon, authenticated;
+
+grant select on table
+  public.profiles,
+  public.profile_categories,
+  public.catalog_items,
+  public.ratings,
+  public.activities,
+  public.follows,
+  public.activity_likes
+to anon, authenticated;
+
+grant update on table public.profiles to authenticated;
+grant insert, update, delete on table public.profile_categories to authenticated;
+grant insert, update on table public.catalog_items to authenticated;
+grant insert, update, delete on table public.ratings to authenticated;
+grant insert, delete on table public.follows to authenticated;
+grant insert, delete on table public.activity_likes to authenticated;
+
+grant all privileges on table
+  public.profiles,
+  public.profile_categories,
+  public.catalog_items,
+  public.ratings,
+  public.activities,
+  public.follows,
+  public.activity_likes
+to service_role;
 
 insert into storage.buckets(id, name, public, file_size_limit, allowed_mime_types)
 values ('profile-media', 'profile-media', true, 5242880, array['image/jpeg', 'image/png', 'image/webp'])
