@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="800" viewBox="0 0 600 800">
+  <rect width="600" height="800" fill="#ded9cf"/>
+  <path d="M210 290h180v180H210z" fill="#f6f3ed" rx="20"/>
+  <path d="m240 430 52-58 42 41 28-25 48 42H240z" fill="#f05a36" opacity=".75"/>
+  <circle cx="350" cy="342" r="24" fill="#f05a36" opacity=".75"/>
+  <text x="300" y="525" text-anchor="middle" font-family="Georgia,serif" font-size="30" fill="#77736b">fevez</text>
+</svg>
