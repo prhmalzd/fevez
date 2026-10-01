@@ -1,33 +1,97 @@
 "use client";
 
-import { ArrowRight, Mail } from "lucide-react";
+import { ArrowRight, LockKeyhole, UserPlus } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { FormEvent, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/browser";
+
+type AuthMode = "login" | "signup";
 
 export function AuthForm() {
   const router = useRouter();
-  const [sent, setSent] = useState(false);
+  const [mode, setMode] = useState<AuthMode>("login");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
-  async function emailSignIn() {
+
+  function changeMode(nextMode: AuthMode) {
+    setMode(nextMode);
     setError("");
+    setNotice("");
+  }
+
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+
+    if (mode === "signup" && password.length < 8) {
+      setError("Use at least 8 characters for your password.");
+      return;
+    }
+
     const supabase = createSupabaseBrowserClient();
-    if (!supabase) { setSent(true); return; }
+    if (!supabase) {
+      setError("Authentication is not configured yet.");
+      return;
+    }
+
     setLoading(true);
-    const { error: signInError } = await supabase.auth.signInWithOtp({ email, options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/home` } });
+
+    if (mode === "login") {
+      const { error: signInError } = await supabase.auth.signInWithPassword({ email, password });
+      setLoading(false);
+      if (signInError) {
+        setError(signInError.message);
+        return;
+      }
+      router.replace("/home");
+      router.refresh();
+      return;
+    }
+
+    const { data, error: signUpError } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { emailRedirectTo: `${window.location.origin}/auth/callback?next=/onboarding` }
+    });
     setLoading(false);
-    if (signInError) setError(signInError.message); else setSent(true);
+    if (signUpError) {
+      setError(signUpError.message);
+      return;
+    }
+    if (data.session) {
+      router.replace("/onboarding");
+      router.refresh();
+      return;
+    }
+    setNotice("Account created. Check your inbox to confirm your email, then log in.");
   }
-  async function googleSignIn() {
-    setError("");
-    const supabase = createSupabaseBrowserClient();
-    if (!supabase) { router.push("/home"); return; }
-    const { error: signInError } = await supabase.auth.signInWithOAuth({ provider: "google", options: { redirectTo: `${window.location.origin}/auth/callback?next=/home` } });
-    if (signInError) setError(signInError.message);
-  }
-  return <div style={{ display: "grid", gap: 12 }}>
-    {sent ? <div className="surface" style={{ padding: 18, borderRadius: 15 }}><strong>Check your inbox</strong><p className="muted" style={{ fontSize: 13, lineHeight: 1.5, marginBottom: 0 }}>We sent you a secure sign-in link. It expires shortly.</p></div> : <><label htmlFor="email" style={{ fontSize: 13, fontWeight: 700 }}>Email address</label><input id="email" value={email} onChange={(event) => setEmail(event.target.value)} className="field" placeholder="you@example.com" type="email" /><button disabled={loading || !email} onClick={emailSignIn} className="primary-button"><Mail size={17} /> {loading ? "Sending…" : "Continue with email"}</button><div className="muted" style={{ textAlign: "center", fontSize: 12 }}>or</div><button onClick={googleSignIn} className="secondary-button">Continue with Google <ArrowRight size={16} /></button>{error && <p role="alert" style={{ color: "#c73d30", fontSize: 13 }}>{error}</p>}</>}
+
+  return <div style={{ display: "grid", gap: 18 }}>
+    <div className="surface" aria-label="Authentication mode" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, padding: 5, borderRadius: 14 }}>
+      <button type="button" aria-pressed={mode === "login"} onClick={() => changeMode("login")} className={mode === "login" ? "primary-button" : "secondary-button"} style={{ justifyContent: "center" }}>Log in</button>
+      <button type="button" aria-pressed={mode === "signup"} onClick={() => changeMode("signup")} className={mode === "signup" ? "primary-button" : "secondary-button"} style={{ justifyContent: "center" }}>Create account</button>
+    </div>
+
+    <form onSubmit={submit} style={{ display: "grid", gap: 12 }}>
+      <div className="field-group" style={{ marginBottom: 0 }}>
+        <label htmlFor="auth-email">Email address</label>
+        <input id="auth-email" name="email" value={email} onChange={(event) => setEmail(event.target.value)} className="field" placeholder="you@example.com" type="email" autoComplete="email" required />
+      </div>
+      <div className="field-group" style={{ marginBottom: 0 }}>
+        <label htmlFor="auth-password">Password</label>
+        <input id="auth-password" name="password" value={password} onChange={(event) => setPassword(event.target.value)} className="field" placeholder={mode === "signup" ? "At least 8 characters" : "Your password"} type="password" autoComplete={mode === "signup" ? "new-password" : "current-password"} minLength={mode === "signup" ? 8 : 6} required />
+      </div>
+      <button disabled={loading || !email || !password} type="submit" className="primary-button" style={{ marginTop: 4 }}>
+        {mode === "signup" ? <UserPlus size={17} /> : <LockKeyhole size={17} />}
+        {loading ? "Please wait…" : mode === "signup" ? "Create my account" : "Log in"}
+        {!loading && <ArrowRight size={16} />}
+      </button>
+      {error && <p role="alert" style={{ color: "#c73d30", fontSize: 13, margin: 0 }}>{error}</p>}
+      {notice && <p role="status" className="surface" style={{ fontSize: 13, lineHeight: 1.5, margin: 0, padding: 14, borderRadius: 12 }}>{notice}</p>}
+    </form>
   </div>;
 }

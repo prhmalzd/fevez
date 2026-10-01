@@ -16,7 +16,7 @@ Open `http://localhost:3000`. Useful demo routes include `/home`, `/explore`, `/
 1. Create a Supabase project.
 2. Run `supabase/migrations/202609300001_initial_schema.sql`, then optionally `supabase/seed.sql`.
 3. Copy `.env.example` to `.env.local` and provide `NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
-4. Enable Google in Supabase Auth and add `http://localhost:3000/auth/callback` plus the production callback URL to the redirect allow-list.
+4. Enable the Email provider in Supabase Auth. If email confirmation is enabled, add `http://localhost:3000/auth/callback` plus the production callback URL to the redirect allow-list.
 
 The migration provides profiles, ordered category settings, catalog snapshots, Top 25 ratings, follows, activities, likes, constraints, triggers, storage policies, and row-level security.
 
